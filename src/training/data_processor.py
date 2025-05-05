@@ -11,7 +11,7 @@ class EmailProcessor:
     
     def __init__(self, takeout_dir: str = None):
         """Initialize the processor with the takeout directory."""
-        self.takeout_dir = takeout_dir or str(Config.TAKEOUT_DIR)
+        self.takeout_dir = takeout_dir or str(Config.TAKEOUT_DIR / "Mail")
         self.output_file = str(Config.TRAINING_FILE)
     
     def process_emails(self) -> bool:
@@ -72,17 +72,11 @@ class EmailProcessor:
         return test_data
     
     def _process_directory(self) -> List[Dict[str, Any]]:
-        """Process the takeout directory and return training data from MBOX files."""
+        """Process the takeout directory and return training data from MBOX files, pairing received and sent emails."""
         import mailbox
         import glob
-        import email
+        import os
         from email.header import decode_header
-
-        training_data = []
-        mbox_files = glob.glob(os.path.join(self.takeout_dir, '**', '*.mbox'), recursive=True)
-        if not mbox_files:
-            logger.warning("No MBOX files found in Takeout directory. Generating test data.")
-            return self._generate_test_data()
 
         def decode_str(s):
             if not s:
@@ -93,45 +87,98 @@ class EmailProcessor:
                 for part, enc in parts
             ])
 
-        for mbox_path in mbox_files:
-            logger.info(f"Processing MBOX file: {mbox_path}")
-            mbox = mailbox.mbox(mbox_path)
-            for msg in mbox:
-                try:
-                    subject = decode_str(msg.get('subject', ''))
-                    from_ = decode_str(msg.get('from', ''))
-                    to = decode_str(msg.get('to', ''))
-                    date = decode_str(msg.get('date', ''))
-                    # Get email body (plain text preferred)
-                    body = ''
-                    if msg.is_multipart():
-                        for part in msg.walk():
-                            ctype = part.get_content_type()
-                            disp = str(part.get('Content-Disposition'))
-                            if ctype == 'text/plain' and 'attachment' not in disp:
-                                charset = part.get_content_charset() or 'utf-8'
-                                body = part.get_payload(decode=True).decode(charset, errors='replace')
-                                break
-                    else:
+        def get_email_body(msg):
+            body = None
+            if msg.is_multipart():
+                for part in msg.walk():
+                    content_type = part.get_content_type()
+                    content_disposition = str(part.get("Content-Disposition"))
+                    if content_type == "text/plain" and "attachment" not in content_disposition:
+                        try:
+                            charset = part.get_content_charset() or 'utf-8'
+                            body = part.get_payload(decode=True).decode(charset, errors='replace')
+                            break
+                        except Exception:
+                            continue
+            else:
+                content_type = msg.get_content_type()
+                if content_type == "text/plain":
+                    try:
                         charset = msg.get_content_charset() or 'utf-8'
-                        body = msg.get_payload(decode=True)
-                        if body:
-                            body = body.decode(charset, errors='replace')
-                        else:
-                            body = ''
-                    # Skip empty bodies
-                    if not body.strip():
+                        body = msg.get_payload(decode=True).decode(charset, errors='replace')
+                    except Exception:
+                        pass
+            return body or ''
+
+        # --- Index all received messages by Message-ID ---
+        takeout_mail_dir = self.takeout_dir
+        messages_by_id = {}
+        all_mbox_files = [f for f in os.listdir(takeout_mail_dir) if f.endswith('.mbox')]
+        mailboxes_to_index = [m for m in all_mbox_files if m != 'Sent.mbox']
+        for mbox_file in mailboxes_to_index:
+            mbox_path = os.path.join(takeout_mail_dir, mbox_file)
+            try:
+                mbox_obj = mailbox.mbox(mbox_path, factory=None)
+                for msg in mbox_obj:
+                    if msg is None:
                         continue
-                    # Format as OpenAI training example
-                    training_data.append({
-                        "messages": [
-                            {"role": "system", "content": Config.SYSTEM_PROMPT},
-                            {"role": "user", "content": f"Subject: {subject}\nFrom: {from_}\nTo: {to}\nDate: {date}\n\n{body.strip()}"},
-                            {"role": "assistant", "content": "[PLACEHOLDER]"}
-                        ]
-                    })
-                except Exception as e:
-                    logger.warning(f"Failed to process an email: {e}")
+                    msg_id = msg.get('Message-ID')
+                    if msg_id and msg_id not in messages_by_id:
+                        body = get_email_body(msg)
+                        messages_by_id[msg_id] = {
+                            'body': body.strip() if body else '',
+                            'subject': str(msg.get('Subject', '')),
+                            'from': str(msg.get('From', ''))
+                        }
+            except Exception:
+                continue
+        logger.info(f"Indexed {len(messages_by_id)} received messages by Message-ID.")
+
+        # --- Process Sent.mbox and create training data for matched pairs ---
+        sent_mbox_path = os.path.join(takeout_mail_dir, "Sent.mbox")
+        training_data = []
+        your_email_address = getattr(Config, "YOUR_EMAIL_ADDRESS", None) or "violet@ifp.org"
+        unique_from_addresses = set()
+        sent_with_reply_header = 0
+        total_sent = 0
+        if os.path.exists(sent_mbox_path):
+            sent_mbox_obj = mailbox.mbox(sent_mbox_path, factory=None)
+            for sent_msg in sent_mbox_obj:
+                if sent_msg is None:
                     continue
-        logger.info(f"Processed {len(training_data)} emails from MBOX files.")
+                total_sent += 1
+                sender = sent_msg.get('From', '')
+                unique_from_addresses.add(sender)
+                in_reply_to_id = sent_msg.get('In-Reply-To')
+                references = sent_msg.get('References')
+                if in_reply_to_id or references:
+                    sent_with_reply_header += 1
+                if your_email_address not in str(sender).lower():
+                    continue
+                original_id_to_lookup = None
+                if in_reply_to_id:
+                    original_id_to_lookup = in_reply_to_id
+                elif references:
+                    ref_list = references.split()
+                    if ref_list:
+                        original_id_to_lookup = ref_list[-1]
+                original_msg_data = None
+                if original_id_to_lookup:
+                    original_msg_data = messages_by_id.get(original_id_to_lookup)
+                if original_msg_data:
+                    original_body = original_msg_data.get('body', '')
+                    sent_body_raw = get_email_body(sent_msg)
+                    cleaned_sent_body = sent_body_raw.strip() if sent_body_raw else ''
+                    if original_body and cleaned_sent_body:
+                        training_data.append({
+                            "messages": [
+                                {"role": "system", "content": Config.SYSTEM_PROMPT},
+                                {"role": "user", "content": original_body},
+                                {"role": "assistant", "content": cleaned_sent_body}
+                            ]
+                        })
+        logger.info(f"Processed {len(training_data)} matched email-reply pairs from MBOX files.")
+        logger.info(f"Unique 'From' addresses in Sent.mbox: {unique_from_addresses}")
+        logger.info(f"Total sent emails: {total_sent}")
+        logger.info(f"Sent emails with In-Reply-To or References: {sent_with_reply_header}")
         return training_data 
