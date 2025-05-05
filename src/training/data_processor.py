@@ -72,10 +72,66 @@ class EmailProcessor:
         return test_data
     
     def _process_directory(self) -> List[Dict[str, Any]]:
-        """Process the takeout directory and return training data."""
-        if not os.path.exists(self.takeout_dir):
+        """Process the takeout directory and return training data from MBOX files."""
+        import mailbox
+        import glob
+        import email
+        from email.header import decode_header
+
+        training_data = []
+        mbox_files = glob.glob(os.path.join(self.takeout_dir, '**', '*.mbox'), recursive=True)
+        if not mbox_files:
+            logger.warning("No MBOX files found in Takeout directory. Generating test data.")
             return self._generate_test_data()
-            
-        # TODO: Implement actual email processing from takeout
-        # For now, return test data
-        return self._generate_test_data() 
+
+        def decode_str(s):
+            if not s:
+                return ''
+            parts = decode_header(s)
+            return ''.join([
+                (part.decode(enc or 'utf-8') if isinstance(part, bytes) else part)
+                for part, enc in parts
+            ])
+
+        for mbox_path in mbox_files:
+            logger.info(f"Processing MBOX file: {mbox_path}")
+            mbox = mailbox.mbox(mbox_path)
+            for msg in mbox:
+                try:
+                    subject = decode_str(msg.get('subject', ''))
+                    from_ = decode_str(msg.get('from', ''))
+                    to = decode_str(msg.get('to', ''))
+                    date = decode_str(msg.get('date', ''))
+                    # Get email body (plain text preferred)
+                    body = ''
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            ctype = part.get_content_type()
+                            disp = str(part.get('Content-Disposition'))
+                            if ctype == 'text/plain' and 'attachment' not in disp:
+                                charset = part.get_content_charset() or 'utf-8'
+                                body = part.get_payload(decode=True).decode(charset, errors='replace')
+                                break
+                    else:
+                        charset = msg.get_content_charset() or 'utf-8'
+                        body = msg.get_payload(decode=True)
+                        if body:
+                            body = body.decode(charset, errors='replace')
+                        else:
+                            body = ''
+                    # Skip empty bodies
+                    if not body.strip():
+                        continue
+                    # Format as OpenAI training example
+                    training_data.append({
+                        "messages": [
+                            {"role": "system", "content": Config.SYSTEM_PROMPT},
+                            {"role": "user", "content": f"Subject: {subject}\nFrom: {from_}\nTo: {to}\nDate: {date}\n\n{body.strip()}"},
+                            {"role": "assistant", "content": "[PLACEHOLDER]"}
+                        ]
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to process an email: {e}")
+                    continue
+        logger.info(f"Processed {len(training_data)} emails from MBOX files.")
+        return training_data 
