@@ -58,7 +58,8 @@ class Config:
     MODEL_NAME = get_param_from_file(PARAMS_ENV, "MODEL_NAME") or os.getenv("MODEL_NAME", "gpt-3.5-turbo")
     SUFFIX = get_param_from_file(PARAMS_ENV, "MODEL_SUFFIX") or os.getenv("MODEL_SUFFIX", "email_tuned")
     MAX_TOKENS = int(get_param_from_file(PARAMS_ENV, "MAX_TOKENS") or os.getenv("MAX_TOKENS", "300"))
-    TEMPERATURE = float(get_param_from_file(PARAMS_ENV, "TEMPERATURE") or os.getenv("TEMPERATURE", "0.7"))
+    _temp = get_param_from_file(PARAMS_ENV, "TEMPERATURE") or os.getenv("TEMPERATURE", None)
+    TEMPERATURE = float(_temp) if _temp is not None else None
     
     # Training configuration - loaded from params.env with fallbacks
     MONITORING_INTERVAL = int(get_param_from_file(PARAMS_ENV, "MONITORING_INTERVAL") or os.getenv("MONITORING_INTERVAL", "60"))

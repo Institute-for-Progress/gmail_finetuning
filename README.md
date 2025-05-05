@@ -95,12 +95,16 @@ You can choose between different models by uncommenting the desired configuratio
 >
 > **Testing with Fine-tuned vs. Base Model:**
 > By default, if you have a value set for `TRAINED_MODEL_ID` in `config/params.env`, the system will use your fine-tuned model for testing and inference. If you want to test or use the base model instead, simply remove or comment out the `TRAINED_MODEL_ID` line in your configuration file.
+>
+> **Important:**
+> Only include parameters in `config/params.env` that are supported by your selected model. For example, GPT-4.1 fine-tuning does **not** support the `TEMPERATURE` hyperparameter—comment it out or remove it when using GPT-4.1 for training.
+
 Example configuration:
 ```env
 MODEL_NAME=gpt-4.1-2025-04-14
 MODEL_SUFFIX=email_tuned
 MAX_TOKENS=300
-TEMPERATURE=0.7
+# TEMPERATURE=0.7
 ```
 
 ### Environment Variables

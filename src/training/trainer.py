@@ -18,10 +18,13 @@ class ModelTrainer:
         self.model_id: Optional[str] = None
         self.model_helper = EmailModel(self.client)  # For parameter detection
     
-    def upload_training_data(self, file_path: str = "training_data.jsonl") -> bool:
+    def upload_training_data(self, file_path: str = None) -> bool:
         """Upload training data to OpenAI."""
         logger.info("Uploading training data...")
         
+        # Use the correct training file path
+        if file_path is None:
+            file_path = str(Config.TRAINING_FILE)
         try:
             if not validate_training_file(file_path):
                 raise ValueError("Training file validation failed")
@@ -65,8 +68,8 @@ class ModelTrainer:
                 'suffix': Config.SUFFIX
             }
             
-            # Add model-specific parameters if supported
-            if 'temperature' in model_params:
+            # Add model-specific parameters if supported and set
+            if Config.TEMPERATURE is not None:
                 job_params['hyperparameters'] = {
                     'temperature': Config.TEMPERATURE
                 }
